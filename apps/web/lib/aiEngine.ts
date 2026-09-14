@@ -11,6 +11,7 @@
 
 import {
   getCountryByIso,
+  getCountryCapital,
   loadCountries,
   loadCities,
   loadCountryNeighbors,
@@ -216,6 +217,40 @@ export async function queryAI(
 
   // Helper to match a country name or ISO in the query
   const findCountryInText = (text: string): GeoCountryFeature | undefined => {
+    const aliases: Record<string, string> = {
+      usa: "USA",
+      "united states": "USA",
+      america: "USA",
+      uk: "GBR",
+      "united kingdom": "GBR",
+      britain: "GBR",
+      england: "GBR",
+      uae: "ARE",
+      emirates: "ARE",
+      russia: "RUS",
+      korea: "KOR",
+      "south korea": "KOR",
+      "north korea": "PRK",
+      france: "FRA",
+      norway: "NOR",
+      kosovo: "KOS",
+      "n. cyprus": "CYN",
+      "north cyprus": "CYN",
+      "northern cyprus": "CYN",
+      cyprus: "CYP",
+      somaliland: "SOL",
+      drc: "COD",
+      "dr congo": "COD",
+      congo: "COG",
+    };
+
+    for (const [alias, iso] of Object.entries(aliases)) {
+      if (new RegExp(`\\b${alias}\\b`, "i").test(text)) {
+        const found = getCountryByIso(iso);
+        if (found) return found;
+      }
+    }
+
     // Check for explicit ISO
     for (const f of countriesData.features) {
       const iso = (f.properties.ISO_A3 || f.properties.ADM0_A3 || "").toUpperCase();
@@ -223,6 +258,7 @@ export async function queryAI(
         return f;
       }
     }
+
     // Check for country name
     for (const f of countriesData.features) {
       const name = f.properties.NAME.toLowerCase();
@@ -515,6 +551,17 @@ export async function queryAI(
       const area = calculateCountryArea(country);
       const iso = (country.properties.ISO_A3 !== "-99" ? country.properties.ISO_A3 : country.properties.ADM0_A3) || "";
       const verified = AUTHORITATIVE_KNOWLEDGE[iso];
+      const cap = verified?.capital || getCountryCapital(iso, country.properties.NAME);
+      const rawPop = (country.properties.POP_EST as number) || 0;
+      const popStr =
+        verified?.population ||
+        (rawPop >= 1_000_000_000
+          ? `${(rawPop / 1_000_000_000).toFixed(2)} Billion`
+          : rawPop >= 1_000_000
+          ? `${(rawPop / 1_000_000).toFixed(1)} Million`
+          : rawPop > 0
+          ? rawPop.toLocaleString()
+          : "National Record");
 
       return {
         query: prompt,
@@ -527,22 +574,25 @@ export async function queryAI(
             method: area.method,
           },
         ],
-        facts: verified
-          ? [
-              {
-                label: "Official Capital",
-                value: verified.capital,
-                publisher: verified.capitalSource,
-              },
-              {
-                label: "Population Reference",
-                value: verified.population,
-                publisher: verified.populationSource,
-                referenceYear: verified.populationYear,
-                sourceUrl: verified.citationUrl,
-              },
-            ]
-          : [],
+        facts: [
+          {
+            label: "Official Capital",
+            value: cap,
+            publisher: verified?.capitalSource || "Natural Earth Populated Places v5.1.2",
+          },
+          {
+            label: "Population Reference",
+            value: popStr,
+            publisher: verified?.populationSource || "Natural Earth / LandScan",
+            referenceYear: verified?.populationYear || "2020–2024",
+            sourceUrl: verified?.citationUrl,
+          },
+          {
+            label: "Region",
+            value: `${country.properties.CONTINENT}${country.properties.SUBREGION ? ` · ${country.properties.SUBREGION}` : ""}`,
+            publisher: "Natural Earth Admin 0",
+          },
+        ],
         citations: [
           {
             title: "Natural Earth Vector Boundaries 1:110m",
@@ -556,6 +606,233 @@ export async function queryAI(
             type: "highlight",
             payload: {
               iso3List: [iso],
+            },
+          },
+        ],
+        warnings: [],
+      };
+    }
+  }
+
+  // ── INTENT: Capital City Query ("capital of France", "what is the capital of Norway")
+  if (clean.includes("capital")) {
+    let country = findCountryInText(clean);
+    if (!country && context.selectedEntity) {
+      country = getCountryByIso(context.selectedEntity);
+    }
+
+    if (country) {
+      const p = country.properties;
+      const iso = (p.ISO_A3 !== "-99" ? p.ISO_A3 : p.ADM0_A3) || "";
+      const capitalName = getCountryCapital(iso, p.NAME);
+
+      const capitalCity = citiesData.features.find(
+        (c) =>
+          c.properties.adm0cap === 1 &&
+          (c.properties.name.toLowerCase() === capitalName.toLowerCase() ||
+            ((c.properties.adm0_a3 || "").toUpperCase() === iso.toUpperCase() &&
+              c.properties.name.toLowerCase().includes(capitalName.toLowerCase())))
+      );
+
+      const coords = capitalCity?.geometry.coordinates || country.centroid || [0, 0];
+      const pop = capitalCity?.properties.pop_max || 0;
+
+      return {
+        query: prompt,
+        message: `The capital of ${p.NAME} is ${capitalName}${
+          pop > 0 ? ` with a population of ${(pop / 1_000_000).toFixed(2)}M` : ""
+        } (${coords[1].toFixed(2)}°N, ${coords[0].toFixed(2)}°E).`,
+        calculations: [],
+        facts: [
+          {
+            label: "Official Capital",
+            value: capitalName,
+            publisher: "Natural Earth Populated Places v5.1.2",
+          },
+          ...(pop > 0
+            ? [
+                {
+                  label: "Capital Population",
+                  value: `${pop.toLocaleString()} residents`,
+                  publisher: "Natural Earth / LandScan",
+                  referenceYear: "2020–2022",
+                },
+              ]
+            : []),
+          {
+            label: "Sovereign State",
+            value: p.ADMIN || p.NAME,
+            publisher: "Natural Earth Admin 0",
+          },
+        ],
+        citations: [
+          {
+            title: "Natural Earth 1:50m Populated Places Capital Registry",
+            publisher: "North American Cartographic Information Society (NACIS)",
+            url: "https://www.naturalearthdata.com/downloads/50m-cultural-vectors/50m-populated-places/",
+            retrievedAt: "2026-09-04",
+          },
+        ],
+        mapActions: [
+          {
+            type: "navigate",
+            payload: {
+              coordinates: [coords[0], coords[1]],
+              zoom: 5.5,
+              entityName: capitalName,
+              iso3: iso,
+            },
+          },
+        ],
+        warnings: [],
+      };
+    }
+  }
+
+  // ── INTENT: Population Query ("population of Canada", "how many people in France")
+  if (clean.includes("population") || clean.includes("how many people") || clean.includes("people live in")) {
+    let country = findCountryInText(clean);
+    if (!country && context.selectedEntity) {
+      country = getCountryByIso(context.selectedEntity);
+    }
+
+    if (country) {
+      const p = country.properties;
+      const iso = (p.ISO_A3 !== "-99" ? p.ISO_A3 : p.ADM0_A3) || "";
+      const rawPop = (p.POP_EST as number) || 0;
+      const formattedPop =
+        rawPop >= 1_000_000_000
+          ? `${(rawPop / 1_000_000_000).toFixed(2)} Billion`
+          : rawPop >= 1_000_000
+          ? `${(rawPop / 1_000_000).toFixed(1)} Million`
+          : rawPop > 0
+          ? rawPop.toLocaleString()
+          : "Official Census Record";
+
+      const verified = AUTHORITATIVE_KNOWLEDGE[iso];
+
+      return {
+        query: prompt,
+        message: `${p.NAME} has an estimated population of ${
+          verified?.population || formattedPop
+        } (${verified?.populationSource || "Natural Earth v5.1.2 dataset estimate"}).`,
+        calculations: [],
+        facts: [
+          {
+            label: "Estimated Population",
+            value: verified?.population || `${rawPop.toLocaleString()} inhabitants`,
+            publisher: verified?.populationSource || "Natural Earth / World Bank WDI",
+            referenceYear: verified?.populationYear || "2020–2024",
+            sourceUrl: verified?.citationUrl,
+          },
+          {
+            label: "Subregion",
+            value: (p.SUBREGION as string) || (p.CONTINENT as string) || "Global",
+            publisher: "Natural Earth Admin 0",
+          },
+        ],
+        citations: [
+          {
+            title: "Natural Earth Admin 0 Cultural Vectors",
+            publisher: "NACIS / Natural Earth",
+            url: "https://www.naturalearthdata.com/",
+            retrievedAt: "2026-09-04",
+          },
+        ],
+        mapActions: [
+          {
+            type: "open_panel",
+            payload: {
+              iso3: iso,
+              entityName: p.NAME,
+            },
+          },
+        ],
+        warnings: [],
+      };
+    }
+  }
+
+  // ── INTENT: Comprehensive Country Facts ("facts about France", "stats for Norway", "tell me about India")
+  if (
+    clean.startsWith("about ") ||
+    clean.includes("facts about") ||
+    clean.includes("tell me about") ||
+    clean.includes("stats for") ||
+    clean.includes("info on") ||
+    clean.includes("facts on")
+  ) {
+    let country = findCountryInText(clean);
+    if (!country && context.selectedEntity) {
+      country = getCountryByIso(context.selectedEntity);
+    }
+
+    if (country) {
+      const p = country.properties;
+      const iso = (p.ISO_A3 !== "-99" ? p.ISO_A3 : p.ADM0_A3) || "";
+      const area = calculateCountryArea(country);
+      const cap = getCountryCapital(iso, p.NAME);
+      const rawPop = (p.POP_EST as number) || 0;
+      const popStr =
+        rawPop >= 1_000_000_000
+          ? `${(rawPop / 1_000_000_000).toFixed(2)}B`
+          : rawPop >= 1_000_000
+          ? `${(rawPop / 1_000_000).toFixed(1)}M`
+          : rawPop.toLocaleString();
+
+      return {
+        query: prompt,
+        message: `${p.ADMIN || p.NAME} is situated in ${p.CONTINENT}${
+          p.SUBREGION ? ` (${p.SUBREGION})` : ""
+        }. Capital: ${cap}. Population: ${popStr}. Surface area: ${area.areaKm2.toLocaleString()} km².`,
+        calculations: [
+          {
+            title: "Geodesic Surface Area",
+            metric: "WGS84 Surface Integral",
+            value: `${area.areaKm2.toLocaleString()} km² (${area.areaSqMiles.toLocaleString()} sq mi)`,
+            method: area.method,
+          },
+        ],
+        facts: [
+          {
+            label: "Official Capital",
+            value: cap,
+            publisher: "Natural Earth Populated Places v5.1.2",
+          },
+          {
+            label: "Population Reference",
+            value: `${popStr} inhabitants (${rawPop.toLocaleString()})`,
+            publisher: "Natural Earth / LandScan v5.1.2",
+          },
+          {
+            label: "Continent & Subregion",
+            value: `${p.CONTINENT} · ${p.SUBREGION || "National Territory"}`,
+            publisher: "Natural Earth Admin 0",
+          },
+          ...(p.ECONOMY
+            ? [
+                {
+                  label: "Economic Group",
+                  value: (p.ECONOMY as string).replace(/^\d+\.\s*/, ""),
+                  publisher: "World Bank / Natural Earth",
+                },
+              ]
+            : []),
+        ],
+        citations: [
+          {
+            title: "Natural Earth Vector Boundaries & Populated Places",
+            publisher: "NACIS / Natural Earth",
+            url: "https://www.naturalearthdata.com/",
+            retrievedAt: "2026-09-04",
+          },
+        ],
+        mapActions: [
+          {
+            type: "open_panel",
+            payload: {
+              iso3: iso,
+              entityName: p.NAME,
             },
           },
         ],

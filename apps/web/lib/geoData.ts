@@ -122,10 +122,29 @@ export async function loadCountries(): Promise<CountryDataset> {
     // Ensure ISO_A3 property has the canonical code
     p.ISO_A3 = canonicalIso;
 
-    // Compute centroid for direct on-map label placement
+    // Compute mainland centroid for direct on-map label placement
     try {
-      const centroid = d3Geo.geoCentroid(feature);
-      feature.centroid = centroid;
+      if (feature.geometry.type === "Polygon") {
+        feature.centroid = d3Geo.geoCentroid(feature);
+      } else if (feature.geometry.type === "MultiPolygon") {
+        let maxArea = 0;
+        let largestPoly: GeoJSON.Polygon | null = null;
+        for (const coords of feature.geometry.coordinates) {
+          const poly = turf.polygon(coords);
+          const a = turf.area(poly);
+          if (a > maxArea) {
+            maxArea = a;
+            largestPoly = poly.geometry;
+          }
+        }
+        if (largestPoly) {
+          feature.centroid = d3Geo.geoCentroid(largestPoly);
+        } else {
+          feature.centroid = d3Geo.geoCentroid(feature);
+        }
+      } else {
+        feature.centroid = d3Geo.geoCentroid(feature);
+      }
     } catch {
       // Fallback to turf centroid
       const c = turf.centroid(feature);

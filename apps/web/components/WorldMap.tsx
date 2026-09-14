@@ -309,11 +309,74 @@ export default function WorldMap() {
     [neighborCountries]
   );
 
-  // ── COUNTRY NAME LABELS ACROSS THE ENTIRE WORLD MAP ─────────────────
-  // Every country name is visible with clean collision detection and zoom scaling
+  // ── COUNTRY NAME LABELS & SINGLE-COUNTRY FOCUS MODE ─────────────────
+  // At world view: all country names are visible in clean Title Case
+  // When a country is clicked: ONLY that country (and active neighbors) is shown, hiding all other data
   const visibleCountryLabels = useMemo(() => {
     if (!countries) return [];
 
+    // FOCUS MODE: If a specific country is selected, show ONLY that country (and active neighbors)
+    if (selectedIso) {
+      const labels: {
+        feature: GeoCountryFeature;
+        name: string;
+        iso: string;
+        screenX: number;
+        screenY: number;
+        fontSize: number;
+        priority: number;
+      }[] = [];
+
+      const selectedFeature = countries.features.find((f) => {
+        const p = f.properties;
+        const iso = ((p.ISO_A3 !== "-99" ? p.ISO_A3 : p.ADM0_A3) || "").toUpperCase();
+        return iso === selectedIso;
+      });
+
+      if (selectedFeature) {
+        const centroid = selectedFeature.centroid || d3Geo.geoCentroid(selectedFeature);
+        const pt = baseProjection(centroid);
+        if (pt) {
+          labels.push({
+            feature: selectedFeature,
+            name: selectedFeature.properties.NAME || selectedFeature.properties.ADMIN || "",
+            iso: selectedIso,
+            screenX: pt[0],
+            screenY: pt[1],
+            fontSize: 14,
+            priority: 9999999,
+          });
+        }
+      }
+
+      // If neighbor countries are highlighted, include neighbor labels
+      if (neighborCountries.length > 0) {
+        const nSet = new Set(neighborCountries.map((n) => n.toUpperCase()));
+        for (const f of countries.features) {
+          const p = f.properties;
+          const iso = ((p.ISO_A3 !== "-99" ? p.ISO_A3 : p.ADM0_A3) || "").toUpperCase();
+          if (nSet.has(iso)) {
+            const centroid = f.centroid || d3Geo.geoCentroid(f);
+            const pt = baseProjection(centroid);
+            if (pt) {
+              labels.push({
+                feature: f,
+                name: p.NAME || p.ADMIN || "",
+                iso,
+                screenX: pt[0],
+                screenY: pt[1],
+                fontSize: 9.5,
+                priority: 1000,
+              });
+            }
+          }
+        }
+      }
+
+      return labels;
+    }
+
+    // WORLD MODE: Show country names across the globe in clean Title Case (never all-caps)
     const labelCandidates: {
       feature: GeoCountryFeature;
       name: string;
@@ -332,52 +395,30 @@ export default function WorldMap() {
       if (!pt) continue;
 
       const area = f.areaKm2 || 10000;
-      const isSelected = selectedIso === iso;
+      let fontSize = 8;
+      if (area > 2_500_000) fontSize = 11.5;
+      else if (area > 800_000) fontSize = 10;
+      else if (area > 200_000) fontSize = 9;
+      else if (area > 50_000) fontSize = 8.2;
 
-      // Area-based priority
-      let shouldShow = false;
-      let fontSize = 9;
-
-      if (isSelected) {
-        shouldShow = true;
-        fontSize = 13;
-      } else if (currentZoom < 1.4) {
-        // World zoom: show countries with area > 100k km²
-        if (area > 120_000) {
-          shouldShow = true;
-          fontSize = area > 2_000_000 ? 11 : area > 500_000 ? 9.5 : 8.5;
-        }
-      } else if (currentZoom < 2.5) {
-        // Continental zoom: show countries with area > 35k km²
-        if (area > 35_000) {
-          shouldShow = true;
-          fontSize = area > 1_000_000 ? 11 : 9;
-        }
-      } else {
-        // Closer zoom: show all countries
-        shouldShow = true;
-        fontSize = 10;
-      }
-
-      if (shouldShow) {
-        labelCandidates.push({
-          feature: f,
-          name: p.NAME.toUpperCase(),
-          iso,
-          screenX: pt[0],
-          screenY: pt[1],
-          fontSize,
-          priority: isSelected ? 9999999 : area,
-        });
-      }
+      // Natural Title Case from GeoJSON NAME property (e.g. "France", "United States", "Norway")
+      labelCandidates.push({
+        feature: f,
+        name: p.NAME || p.ADMIN || "",
+        iso,
+        screenX: pt[0],
+        screenY: pt[1],
+        fontSize,
+        priority: area,
+      });
     }
 
-    // Sort by priority (larger countries and selected country first)
+    // Sort by priority (larger countries first)
     labelCandidates.sort((a, b) => b.priority - a.priority);
 
-    // Screen-space collision detection so labels never overlap
+    // Collision detection with responsive spacing so labels remain readable
     const acceptedLabels: typeof labelCandidates = [];
-    const minGap = currentZoom < 1.4 ? 36 : 24;
+    const minGap = currentZoom < 1.4 ? 18 : 12;
 
     for (const candidate of labelCandidates) {
       const collides = acceptedLabels.some(
@@ -385,13 +426,13 @@ export default function WorldMap() {
           Math.hypot(existing.screenX - candidate.screenX, existing.screenY - candidate.screenY) < minGap
       );
 
-      if (!collides || candidate.iso === selectedIso) {
+      if (!collides) {
         acceptedLabels.push(candidate);
       }
     }
 
     return acceptedLabels;
-  }, [countries, selectedIso, currentZoom, baseProjection]);
+  }, [countries, selectedIso, neighborCountries, currentZoom, baseProjection]);
 
   // ── STRICT CITY DECLUTTERING & SCREEN-SPACE COLLISION DETECTION ─────
   const declutteredCities = useMemo(() => {
@@ -635,7 +676,7 @@ export default function WorldMap() {
               </g>
             )}
 
-            {/* ── EVERY COUNTRY NAME ON THE MAP ── */}
+            {/* ── COUNTRY NAME LABELS ACROSS THE MAP (TITLE CASE) ── */}
             <g id="country-labels-layer" className="pointer-events-none select-none">
               {visibleCountryLabels.map((lbl, idx) => {
                 const isSelected = lbl.iso === selectedIso;
@@ -649,8 +690,13 @@ export default function WorldMap() {
                     textAnchor="middle"
                     dominantBaseline="central"
                     fontSize={lbl.fontSize}
-                    fill={isSelected ? "#00d2b4" : isHovered ? "#ffffff" : "rgba(226, 232, 240, 0.72)"}
-                    className="font-medium font-sans drop-shadow-[0_1px_4px_rgba(0,0,0,0.9)] tracking-wider uppercase transition-colors"
+                    fontWeight={isSelected ? 700 : 500}
+                    fill={isSelected ? "#00d2b4" : isHovered ? "#ffffff" : "rgba(226, 232, 240, 0.82)"}
+                    stroke="#070b14"
+                    strokeWidth={isSelected ? 3.5 : 2}
+                    paintOrder="stroke fill"
+                    strokeLinejoin="round"
+                    className="font-sans drop-shadow-[0_1px_3px_rgba(0,0,0,0.9)] tracking-normal transition-colors"
                   >
                     {lbl.name}
                   </text>

@@ -145,14 +145,7 @@ export const useMapStore = create<MapState>()(
     // ── Selected countries ───────────────────────────────────────────
     selectedCountries: [],
     selectCountry: (country) => {
-      const current = get().selectedCountries;
-      const exists = current.find((c) => c.iso3 === country.iso3);
-      if (exists) {
-        set({ countryPanelOpen: true });
-        return;
-      }
-      const next = current.length >= 2 ? [current[1], country] : [...current, country];
-      set({ selectedCountries: next, countryPanelOpen: true, selectedCity: null });
+      set({ selectedCountries: [country], countryPanelOpen: true, selectedCity: null });
     },
     clearCountries: () =>
       set({ selectedCountries: [], countryPanelOpen: false, neighborCountries: [] }),
