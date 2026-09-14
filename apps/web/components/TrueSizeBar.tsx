@@ -1,6 +1,7 @@
 "use client";
 
 import { useMapStore } from "@/stores/mapStore";
+import { Move, X } from "lucide-react";
 
 const PRESETS = [
   { iso3: "GRL", label: "Greenland", note: "Compare with Africa or South America" },
@@ -16,16 +17,15 @@ export default function TrueSizeBar() {
   if (activeMode !== "true-size") return null;
 
   return (
-    <div className="fixed top-16 left-1/2 -translate-x-1/2 z-40 w-auto max-w-[90vw] px-4 py-2.5 rounded-2xl bg-slate-900/95 border border-amber-500/50 shadow-2xl backdrop-blur-xl flex flex-wrap items-center gap-3 text-xs font-mono text-slate-200 animate-in slide-in-from-top-4 duration-200">
-      <div className="flex items-center gap-2 pr-2 border-r border-slate-700">
-        <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
+    <div className="fixed top-16 left-1/2 -translate-x-1/2 z-40 w-auto max-w-[92vw] px-3.5 py-2 rounded-xl bg-slate-900/95 border border-amber-500/40 shadow-2xl backdrop-blur-xl flex flex-wrap items-center gap-2.5 text-xs text-slate-200 animate-in slide-in-from-top-3 duration-150">
+      <div className="flex items-center gap-1.5 pr-2 border-r border-slate-700">
+        <Move className="w-3.5 h-3.5 text-amber-400" />
         <span className="font-semibold text-amber-300">True-Size Drag:</span>
         <span className="text-[11px] text-slate-400 hidden sm:inline">
-          Drag the orange silhouette across latitudes
+          Drag silhouette across latitudes
         </span>
       </div>
 
-      {/* Preset country selectors */}
       <div className="flex items-center gap-1.5 overflow-x-auto">
         {PRESETS.map((p) => {
           const isSelected = trueSizeIso3 === p.iso3;
@@ -48,9 +48,10 @@ export default function TrueSizeBar() {
 
       <button
         onClick={() => setActiveMode("explore")}
-        className="ml-auto px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium transition-colors"
+        className="ml-auto p-1 rounded-lg hover:bg-slate-800 text-slate-400 hover:text-white transition-colors"
+        title="Exit True Size mode"
       >
-        Exit True-Size ✕
+        <X className="w-4 h-4" />
       </button>
     </div>
   );

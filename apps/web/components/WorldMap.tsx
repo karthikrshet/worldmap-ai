@@ -16,27 +16,26 @@ import {
   type CityDataset,
 } from "@/lib/geoData";
 import { calculateGeodesicDistance } from "@/lib/geoCalculations";
+import { Plus, Minus, RotateCcw, Grid } from "lucide-react";
 
 interface HoverInfo {
   x: number;
   y: number;
   name: string;
-  iso3: string;
   subtitle: string;
   type: "country" | "city";
-  coords?: string;
 }
 
 export default function WorldMap() {
   const containerRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
 
-  // Store state
   const {
     activeProjection,
     activeMode,
     selectedCountries,
     selectCountry,
+    clearCountries,
     selectedCity,
     setSelectedCity,
     highlightedCountries,
@@ -49,10 +48,9 @@ export default function WorldMap() {
     distanceResult,
     setDistanceResult,
     showGraticule,
-    showCities,
+    toggleGraticule,
   } = useMapStore();
 
-  // Local dataset state
   const [countries, setCountries] = useState<CountryDataset | null>(null);
   const [cities, setCities] = useState<CityDataset | null>(null);
   const [dimensions, setDimensions] = useState<{ width: number; height: number }>({
@@ -62,20 +60,18 @@ export default function WorldMap() {
   const [hoverInfo, setHoverInfo] = useState<HoverInfo | null>(null);
   const [loading, setLoading] = useState(true);
 
-  // Current D3 zoom transform
+  // Zoom transform tracking
   const [currentZoom, setCurrentZoom] = useState(1.0);
   const zoomBehaviorRef = useRef<d3Zoom.ZoomBehavior<SVGSVGElement, unknown> | null>(null);
 
-  // Measure tool point picker
-  const [measureOrigin, setMeasureOrigin] = useState<GeoCityFeature | null>(null);
-
-  // Dragging state for True-Size mode
+  // Dragging states
   const [isDraggingTrueSize, setIsDraggingTrueSize] = useState(false);
-
-  // Dragging state for Projection Lens
   const [isDraggingLens, setIsDraggingLens] = useState(false);
 
-  // ── Load datasets on mount ─────────────────────────────────────────
+  // Measure origin picker
+  const [measureOrigin, setMeasureOrigin] = useState<GeoCityFeature | null>(null);
+
+  // ── Load datasets ──────────────────────────────────────────────────
   useEffect(() => {
     let mounted = true;
     async function initData() {
@@ -87,7 +83,7 @@ export default function WorldMap() {
           setLoading(false);
         }
       } catch (err) {
-        console.error("Failed to load map datasets:", err);
+        console.error("Failed to load map data:", err);
         if (mounted) setLoading(false);
       }
     }
@@ -97,14 +93,14 @@ export default function WorldMap() {
     };
   }, []);
 
-  // ── Track container dimensions ─────────────────────────────────────
+  // ── Window Resize ──────────────────────────────────────────────────
   useEffect(() => {
     function updateDimensions() {
       if (containerRef.current) {
         const rect = containerRef.current.getBoundingClientRect();
         setDimensions({
-          width: Math.max(600, rect.width),
-          height: Math.max(400, rect.height),
+          width: Math.max(400, rect.width),
+          height: Math.max(300, rect.height),
         });
       }
     }
@@ -113,10 +109,9 @@ export default function WorldMap() {
     return () => window.removeEventListener("resize", updateDimensions);
   }, []);
 
-  // ── Build Base Projections ─────────────────────────────────────────
   const { width, height } = dimensions;
 
-  // Primary Projection
+  // ── Base Projection Setup ──────────────────────────────────────────
   const baseProjection = useMemo(() => {
     const scale = Math.min(width / 5.8, height / 3.0);
     const center: [number, number] = [width / 2, height / 2];
@@ -147,7 +142,6 @@ export default function WorldMap() {
           .clipAngle(90);
       case "equal-earth":
       default:
-        // Default: Equal Earth (September 2026 UNGA resolution A/80/L.104 view)
         return d3Geo
           .geoEqualEarth()
           .scale(scale * 1.25)
@@ -155,7 +149,7 @@ export default function WorldMap() {
     }
   }, [activeProjection, width, height]);
 
-  // Secondary Projection (Used for Mercator side in Difference Slider and Lens)
+  // Secondary Mercator for split slider / lens
   const mercatorProjection = useMemo(() => {
     const scale = Math.min(width / 5.8, height / 3.0);
     return d3Geo
@@ -164,7 +158,6 @@ export default function WorldMap() {
       .translate([width / 2, height / 2]);
   }, [width, height]);
 
-  // D3 Path Generators
   const geoPath = useMemo(() => d3Geo.geoPath().projection(baseProjection), [baseProjection]);
   const mercatorGeoPath = useMemo(
     () => d3Geo.geoPath().projection(mercatorProjection),
@@ -173,14 +166,16 @@ export default function WorldMap() {
 
   // Graticule geometry
   const graticuleLines = useMemo(() => d3Geo.geoGraticule10(), []);
-  const equatorLine = useMemo(() => {
-    return {
-      type: "LineString",
-      coordinates: Array.from({ length: 361 }, (_, i) => [i - 180, 0]),
-    } as GeoJSON.LineString;
-  }, []);
+  const equatorLine = useMemo(
+    () =>
+      ({
+        type: "LineString",
+        coordinates: Array.from({ length: 361 }, (_, i) => [i - 180, 0]),
+      } as GeoJSON.LineString),
+    []
+  );
 
-  // ── Setup Zoom & Pan Behavior ──────────────────────────────────────
+  // ── Setup Zoom & Pan ───────────────────────────────────────────────
   useEffect(() => {
     if (!svgRef.current) return;
 
@@ -197,8 +192,6 @@ export default function WorldMap() {
 
     zoomBehaviorRef.current = zoom;
     svg.call(zoom);
-
-    // Disable double click zoom so users can double click to select cleanly
     svg.on("dblclick.zoom", null);
   }, []);
 
@@ -216,23 +209,25 @@ export default function WorldMap() {
       const x = (x0 + x1) / 2;
       const y = (y0 + y1) / 2;
 
-      // Safe zoom bounds with sensible padding
-      const maxZoom = 7;
-      const minZoom = 1.4;
+      // Safe responsive zoom
+      const maxZoom = 6.5;
+      const minZoom = 1.6;
       const targetScale = Math.max(
         minZoom,
-        Math.min(maxZoom, 0.75 / Math.max(dx / width, dy / height))
+        Math.min(maxZoom, 0.68 / Math.max(dx / width, dy / height))
       );
 
+      // On desktop, offset slightly to left to accommodate right drawer
+      const xOffset = width > 1024 ? width * 0.42 : width / 2;
       const translate: [number, number] = [
-        width / 2 - targetScale * x,
+        xOffset - targetScale * x,
         height / 2 - targetScale * y,
       ];
 
       const svg = d3Selection.select(svgRef.current);
       svg
         .transition()
-        .duration(750)
+        .duration(650)
         .call(
           zoomBehaviorRef.current.transform,
           d3Zoom.zoomIdentity.translate(translate[0], translate[1]).scale(targetScale)
@@ -241,45 +236,56 @@ export default function WorldMap() {
     [geoPath, width, height]
   );
 
-  // Handle country click
+  // Reset to World Scale
+  const resetToWorld = useCallback(() => {
+    if (!svgRef.current || !zoomBehaviorRef.current) return;
+    clearCountries();
+    setSelectedCity(null);
+
+    // Update URL
+    if (typeof window !== "undefined") {
+      const url = new URL(window.location.href);
+      url.searchParams.delete("country");
+      window.history.replaceState({}, "", url.toString());
+    }
+
+    const svg = d3Selection.select(svgRef.current);
+    svg
+      .transition()
+      .duration(500)
+      .call(zoomBehaviorRef.current.transform, d3Zoom.zoomIdentity);
+  }, [clearCountries, setSelectedCity]);
+
+  // Click country
   const handleCountryClick = useCallback(
     (feature: GeoCountryFeature) => {
       const p = feature.properties;
-      const iso3 = (p.ISO_A3 !== "-99" ? p.ISO_A3 : p.ADM0_A3) || "";
+      const iso3 = ((p.ISO_A3 !== "-99" ? p.ISO_A3 : p.ADM0_A3) || "").toUpperCase();
 
-      // Select country in store
       selectCountry({
         iso3,
         name: p.NAME || p.ADMIN || "Unknown",
         continent: p.CONTINENT,
         subregion: p.SUBREGION,
-        source: {
-          dataset_name: "Natural Earth Admin 0 Countries",
-          dataset_version: "v5.1.2 (1:110m)",
-          dataset_url: "https://www.naturalearthdata.com/",
-        },
       });
 
-      // Update URL query state (?country=IND)
       if (typeof window !== "undefined" && iso3) {
         const url = new URL(window.location.href);
         url.searchParams.set("country", iso3);
         window.history.replaceState({}, "", url.toString());
       }
 
-      // Smooth camera zoom
       zoomToCountry(feature);
     },
     [selectCountry, zoomToCountry]
   );
 
-  // Handle city click
+  // Click city
   const handleCityClick = useCallback(
     (city: GeoCityFeature) => {
       setSelectedCity(city);
 
       if (measureOrigin && measureOrigin.properties.name !== city.properties.name) {
-        // Complete distance measurement
         const res = calculateGeodesicDistance(
           measureOrigin.geometry.coordinates,
           city.geometry.coordinates,
@@ -289,103 +295,119 @@ export default function WorldMap() {
         setDistanceResult(res);
         setMeasureOrigin(null);
       }
-
-      // Center on city
-      if (svgRef.current && zoomBehaviorRef.current) {
-        const projected = baseProjection(city.geometry.coordinates);
-        if (projected) {
-          const targetZoom = Math.max(3.5, currentZoom);
-          const svg = d3Selection.select(svgRef.current);
-          svg
-            .transition()
-            .duration(600)
-            .call(
-              zoomBehaviorRef.current.transform,
-              d3Zoom.zoomIdentity
-                .translate(width / 2 - targetZoom * projected[0], height / 2 - targetZoom * projected[1])
-                .scale(targetZoom)
-            );
-        }
-      }
     },
-    [
-      setSelectedCity,
-      measureOrigin,
-      setDistanceResult,
-      baseProjection,
-      currentZoom,
-      width,
-      height,
-    ]
+    [setSelectedCity, measureOrigin, setDistanceResult]
   );
 
-  // ── True Size Feature Relocation ───────────────────────────────────
-  // Calculate relocated geometry for True-Size overlay
+  // Selected Country ISO Set
+  const selectedIso = selectedCountries[0]?.iso3?.toUpperCase() || null;
+  const highlightIsoSet = useMemo(
+    () => new Set(highlightedCountries.map((i) => i.toUpperCase())),
+    [highlightedCountries]
+  );
+  const neighborIsoSet = useMemo(
+    () => new Set(neighborCountries.map((i) => i.toUpperCase())),
+    [neighborCountries]
+  );
+
+  // ── STRICT CITY DECLUTTERING & SCREEN-SPACE COLLISION DETECTION ─────
+  // Core Rule:
+  // 1. When NO country is selected at world zoom: show almost NO city labels (max 6-8 global megacities/capitals).
+  // 2. When a country IS selected: show ONLY that country's major cities, fading unrelated worldwide cities to 0.
+  const declutteredCities = useMemo(() => {
+    if (!cities) return [];
+
+    let candidateCities: GeoCityFeature[] = [];
+
+    if (selectedIso) {
+      // Country Focus Mode: Only cities belonging to the selected country
+      candidateCities = cities.features.filter((c) => {
+        const p = c.properties;
+        const cIso = (p.adm0_a3 || p.sov_a3 || "").toUpperCase();
+        return cIso === selectedIso;
+      });
+
+      // Sort by prominence (Capitals > Megacities > Population)
+      candidateCities.sort((a, b) => {
+        const capA = Number(a.properties.adm0cap || 0);
+        const capB = Number(b.properties.adm0cap || 0);
+        if (capA !== capB) return capB - capA;
+        return Number(b.properties.pop_max || 0) - Number(a.properties.pop_max || 0);
+      });
+
+      // Limit to max 10 prominent cities for the selected nation
+      candidateCities = candidateCities.slice(0, 10);
+    } else {
+      // Global World View:
+      if (currentZoom < 1.8) {
+        // At world scale: Show top 6 major global capitals ONLY
+        const worldCapitals = ["Tokyo", "London", "Washington, D.C.", "New Delhi", "Beijing", "Paris", "Brasília"];
+        candidateCities = cities.features.filter((c) => worldCapitals.includes(c.properties.name));
+      } else if (currentZoom < 3.0) {
+        // Moderate zoom: National capitals only
+        candidateCities = cities.features
+          .filter((c) => c.properties.adm0cap === 1 && c.properties.scalerank <= 2)
+          .slice(0, 20);
+      } else {
+        // Closer zoom: Major regional cities
+        candidateCities = cities.features
+          .filter((c) => c.properties.scalerank <= 4)
+          .slice(0, 45);
+      }
+    }
+
+    // Screen-space proximity collision avoidance:
+    const finalCities: { city: GeoCityFeature; screenX: number; screenY: number }[] = [];
+    const minDistance = selectedIso ? 24 : 45; // Minimum pixel gap between labels
+
+    for (const city of candidateCities) {
+      const pt = baseProjection(city.geometry.coordinates);
+      if (!pt) continue;
+
+      const [sx, sy] = pt;
+      // Check collision against already accepted higher-priority cities
+      const hasCollision = finalCities.some(
+        (existing) => Math.hypot(existing.screenX - sx, existing.screenY - sy) < minDistance
+      );
+
+      if (!hasCollision) {
+        finalCities.push({ city, screenX: sx, screenY: sy });
+      }
+    }
+
+    return finalCities;
+  }, [cities, selectedIso, currentZoom, baseProjection]);
+
+  // ── True-Size Drag Feature Relocation ──────────────────────────────
   const trueSizeFeature = useMemo(() => {
     if (!trueSizeIso3 || !countries) return null;
-    const match = countries.features.find((f) => {
-      const iso = (f.properties.ISO_A3 !== "-99" ? f.properties.ISO_A3 : f.properties.ADM0_A3) || "";
-      return iso.toUpperCase() === trueSizeIso3.toUpperCase();
-    });
-    return match || null;
+    return (
+      countries.features.find((f) => {
+        const iso = ((f.properties.ISO_A3 !== "-99" ? f.properties.ISO_A3 : f.properties.ADM0_A3) || "").toUpperCase();
+        return iso === trueSizeIso3.toUpperCase();
+      }) || null
+    );
   }, [trueSizeIso3, countries]);
 
-  // Projected SVG path for true size relocated silhouette
   const trueSizeRelocatedPath = useMemo(() => {
     if (!trueSizeFeature) return "";
-
-    // Compute centroid of original feature
     const centroid = d3Geo.geoCentroid(trueSizeFeature);
     const dLon = trueSizeCoords[0] - centroid[0];
     const dLat = trueSizeCoords[1] - centroid[1];
 
-    // Create a rotated projection or shifted geometry
-    // A spherical translation rotation:
     const shiftedProjection = d3Geo
       .geoEqualEarth()
       .scale(baseProjection.scale())
       .translate(baseProjection.translate())
       .rotate([-dLon, -dLat, 0]);
 
-    const shiftedPath = d3Geo.geoPath().projection(shiftedProjection);
-    return shiftedPath(trueSizeFeature) || "";
+    return d3Geo.geoPath().projection(shiftedProjection)(trueSizeFeature) || "";
   }, [trueSizeFeature, trueSizeCoords, baseProjection]);
-
-  // ── Selected Country Set for O(1) Lookup ───────────────────────────
-  const selectedIsoSet = useMemo(() => {
-    return new Set(selectedCountries.map((c) => c.iso3.toUpperCase()));
-  }, [selectedCountries]);
-
-  const highlightIsoSet = useMemo(() => {
-    return new Set(highlightedCountries.map((i) => i.toUpperCase()));
-  }, [highlightedCountries]);
-
-  const neighborIsoSet = useMemo(() => {
-    return new Set(neighborCountries.map((i) => i.toUpperCase()));
-  }, [neighborCountries]);
-
-  // ── City Decluttering by Zoom Level ────────────────────────────────
-  const visibleCities = useMemo(() => {
-    if (!cities || !showCities) return [];
-    return cities.features.filter((city) => {
-      const p = city.properties;
-      if (currentZoom < 1.6) {
-        // World scale: only tier 1 megacities
-        return p.scalerank <= 1 || p.megacity === 1;
-      }
-      if (currentZoom < 3.2) {
-        // Regional scale: capitals and major commercial hubs
-        return p.scalerank <= 3 || p.worldcity === 1 || p.adm0cap === 1;
-      }
-      // Closer zoom: show more populated places
-      return p.scalerank <= 6;
-    });
-  }, [cities, showCities, currentZoom]);
 
   return (
     <div
       ref={containerRef}
-      className="relative w-full h-full overflow-hidden select-none bg-[#090d16]"
+      className="relative w-full h-full overflow-hidden select-none bg-[#070b14]"
       style={{ cursor: activeMode === "true-size" ? "crosshair" : "grab" }}
       onMouseMove={(e) => {
         if (isDraggingTrueSize && activeMode === "true-size") {
@@ -405,123 +427,111 @@ export default function WorldMap() {
         setIsDraggingLens(false);
       }}
     >
-      {/* Loading Overlay */}
+      {/* Loading indicator */}
       {loading && (
-        <div className="absolute inset-0 z-30 flex items-center justify-center bg-[#090d16]/90 backdrop-blur-sm">
-          <div className="flex flex-col items-center gap-3">
-            <div className="w-8 h-8 rounded-full border-2 border-emerald-500/30 border-t-emerald-400 animate-spin" />
-            <p className="text-xs font-mono text-slate-300 tracking-wider uppercase">
-              Loading Natural Earth Geometry...
-            </p>
+        <div className="absolute inset-0 z-30 flex items-center justify-center bg-[#070b14]/90 backdrop-blur-sm">
+          <div className="flex flex-col items-center gap-2">
+            <div className="w-6 h-6 rounded-full border-2 border-sky-500/30 border-t-sky-400 animate-spin" />
+            <span className="text-[11px] font-mono text-slate-400 tracking-wider">
+              Rendering Natural Earth...
+            </span>
           </div>
         </div>
       )}
 
-      {/* SVG Canvas Map */}
+      {/* Main Map SVG */}
       <svg
         ref={svgRef}
         width={width}
         height={height}
         className="w-full h-full block"
         style={{ touchAction: "none" }}
+        onClick={(e) => {
+          // Deselect on ocean / background click
+          if ((e.target as SVGElement).tagName === "rect" || (e.target as SVGElement).id === "ocean-bg") {
+            resetToWorld();
+          }
+        }}
       >
         <defs>
-          {/* Gradients */}
-          <radialGradient id="ocean-glow" cx="50%" cy="50%" r="60%">
-            <stop offset="0%" stopColor="#0d1527" />
-            <stop offset="100%" stopColor="#070b12" />
+          <radialGradient id="ocean-gradient" cx="50%" cy="50%" r="65%">
+            <stop offset="0%" stopColor="#0b1222" />
+            <stop offset="100%" stopColor="#060912" />
           </radialGradient>
 
-          {/* Clip path for Difference Slider (Left side: Mercator) */}
+          {/* Difference slider clips */}
           <clipPath id="split-left-clip">
-            <rect
-              x={0}
-              y={0}
-              width={(width * sliderPosition) / 100}
-              height={height}
-            />
+            <rect x={0} y={0} width={(width * sliderPosition) / 100} height={height} />
           </clipPath>
-
-          {/* Clip path for Difference Slider (Right side: Equal Earth) */}
           <clipPath id="split-right-clip">
-            <rect
-              x={(width * sliderPosition) / 100}
-              y={0}
-              width={width - (width * sliderPosition) / 100}
-              height={height}
-            />
+            <rect x={(width * sliderPosition) / 100} y={0} width={width - (width * sliderPosition) / 100} height={height} />
           </clipPath>
 
-          {/* Clip path for Projection Lens */}
+          {/* Lens clip */}
           <clipPath id="lens-circle-clip">
-            <circle
-              cx={lensPosition.x}
-              cy={lensPosition.y}
-              r={lensPosition.radius}
-            />
+            <circle cx={lensPosition.x} cy={lensPosition.y} r={lensPosition.radius} />
           </clipPath>
         </defs>
 
-        {/* Ocean Background */}
-        <rect width={width} height={height} fill="url(#ocean-glow)" />
+        {/* Ocean Background — Clickable to Deselect */}
+        <rect id="ocean-bg" width={width} height={height} fill="url(#ocean-gradient)" className="cursor-default" />
 
-        {/* Main Zoomable & Pannable Group */}
+        {/* Zoom & Pan Group */}
         <g id="map-zoom-group">
-          {/* ── STANDARD OR RIGHT-SIDE RENDERING (EQUAL EARTH / BASE) ── */}
-          <g
-            id="base-map-layer"
-            clipPath={activeMode === "difference-slider" ? "url(#split-right-clip)" : undefined}
-          >
-            {/* Graticule lines (10° grid) */}
+          {/* Base Layer */}
+          <g id="base-layer" clipPath={activeMode === "difference-slider" ? "url(#split-right-clip)" : undefined}>
+            {/* Graticule (subtle) */}
             {showGraticule && (
               <path
                 d={geoPath(graticuleLines) || ""}
                 fill="none"
-                stroke="#1e293b"
+                stroke="#172236"
                 strokeWidth={0.5}
                 strokeDasharray="2,3"
-                opacity={0.65}
+                opacity={0.6}
               />
             )}
-
-            {/* Equator line */}
             {showGraticule && (
               <path
                 d={geoPath(equatorLine) || ""}
                 fill="none"
-                stroke="#334155"
+                stroke="#233452"
                 strokeWidth={0.8}
-                opacity={0.85}
+                opacity={0.8}
               />
             )}
 
-            {/* Country Polygons */}
+            {/* Countries Layer */}
             {countries && (
               <g id="countries-layer">
                 {countries.features.map((feature, idx) => {
                   const p = feature.properties;
                   const iso = ((p.ISO_A3 !== "-99" ? p.ISO_A3 : p.ADM0_A3) || "").toUpperCase();
-                  const isSelected = selectedIsoSet.has(iso);
+                  const isSelected = selectedIso === iso;
                   const isHighlighted = highlightIsoSet.has(iso);
                   const isNeighbor = neighborIsoSet.has(iso);
 
-                  // Colors: Muted natural cartographic tones
-                  let fill = "#172033";
-                  let stroke = "#2a374f";
-                  let strokeWidth = 0.6;
+                  // Restrained editorial colors
+                  let fill = "#131b2e";
+                  let stroke = "#212d45";
+                  let strokeWidth = 0.55;
 
                   if (isSelected) {
-                    fill = "#2563eb";
-                    stroke = "#60a5fa";
+                    fill = "#1d3b6f";
+                    stroke = "#38bdf8";
                     strokeWidth = 1.6;
                   } else if (isNeighbor) {
-                    fill = "#0d9488";
-                    stroke = "#5eead4";
-                    strokeWidth = 1.2;
+                    fill = "#0f3d3e";
+                    stroke = "#2dd4bf";
+                    strokeWidth = 1.1;
                   } else if (isHighlighted) {
-                    fill = "#d97706";
+                    fill = "#3b2d18";
                     stroke = "#fbbf24";
-                    strokeWidth = 1.2;
+                    strokeWidth = 1.1;
+                  } else if (selectedIso) {
+                    // Visually mute other countries when one is selected
+                    fill = "#0f1626";
+                    stroke = "#192338";
                   }
 
                   return (
@@ -531,13 +541,12 @@ export default function WorldMap() {
                       fill={fill}
                       stroke={stroke}
                       strokeWidth={strokeWidth}
-                      className="transition-colors duration-150 cursor-pointer hover:fill-[#2d3d5f] hover:stroke-slate-300"
+                      className="transition-colors duration-150 cursor-pointer hover:fill-[#1e2c47] hover:stroke-slate-400"
                       onMouseEnter={(e) => {
                         setHoverInfo({
                           x: e.clientX,
                           y: e.clientY,
                           name: p.NAME || p.ADMIN || "Unknown",
-                          iso3: iso,
                           subtitle: p.CONTINENT || "",
                           type: "country",
                         });
@@ -546,60 +555,59 @@ export default function WorldMap() {
                         setHoverInfo((prev) => (prev ? { ...prev, x: e.clientX, y: e.clientY } : null));
                       }}
                       onMouseLeave={() => setHoverInfo(null)}
-                      onClick={() => handleCountryClick(feature)}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleCountryClick(feature);
+                      }}
                     />
                   );
                 })}
               </g>
             )}
 
-            {/* Geodesic Distance Arc Route Line */}
+            {/* Geodesic Distance Route Arc */}
             {distanceResult && (
               <g id="geodesic-route-layer">
                 <path
                   d={geoPath(distanceResult.arcGeoJson) || ""}
                   fill="none"
                   stroke="#38bdf8"
-                  strokeWidth={2.2}
+                  strokeWidth={2}
                   strokeDasharray="4,4"
                   className="animate-pulse"
                 />
-                {/* From point */}
                 {baseProjection(distanceResult.fromCoords) && (
                   <circle
                     cx={baseProjection(distanceResult.fromCoords)![0]}
                     cy={baseProjection(distanceResult.fromCoords)![1]}
-                    r={5}
+                    r={4}
                     fill="#38bdf8"
                     stroke="#ffffff"
-                    strokeWidth={2}
+                    strokeWidth={1.5}
                   />
                 )}
-                {/* To point */}
                 {baseProjection(distanceResult.toCoords) && (
                   <circle
                     cx={baseProjection(distanceResult.toCoords)![0]}
                     cy={baseProjection(distanceResult.toCoords)![1]}
-                    r={5}
+                    r={4}
                     fill="#ec4899"
                     stroke="#ffffff"
-                    strokeWidth={2}
+                    strokeWidth={1.5}
                   />
                 )}
               </g>
             )}
 
-            {/* Major Populated Places / Cities Layer */}
-            {visibleCities.map((city, idx) => {
-              const coords = baseProjection(city.geometry.coordinates);
-              if (!coords) return null;
+            {/* Decluttered City Markers & Clean Labels */}
+            {declutteredCities.map(({ city, screenX, screenY }, idx) => {
               const isSelected = selectedCity?.properties.name === city.properties.name;
               const isCapital = city.properties.adm0cap === 1;
 
               return (
                 <g
                   key={idx}
-                  transform={`translate(${coords[0]}, ${coords[1]})`}
+                  transform={`translate(${screenX}, ${screenY})`}
                   className="cursor-pointer group"
                   onClick={(e) => {
                     e.stopPropagation();
@@ -611,10 +619,8 @@ export default function WorldMap() {
                       x: e.clientX,
                       y: e.clientY,
                       name: p.name,
-                      iso3: p.adm0_a3 || p.sov_a3 || "",
-                      subtitle: `${p.adm1name ? p.adm1name + ", " : ""}${p.adm0name}`,
+                      subtitle: `${p.adm0name}${isCapital ? " (Capital)" : ""}`,
                       type: "city",
-                      coords: `${city.geometry.coordinates[1].toFixed(2)}°N, ${city.geometry.coordinates[0].toFixed(2)}°E`,
                     });
                   }}
                   onMouseMove={(e) => {
@@ -622,56 +628,53 @@ export default function WorldMap() {
                   }}
                   onMouseLeave={() => setHoverInfo(null)}
                 >
+                  {/* Subtle City Marker: Small warm gold for capitals, tiny mute dot for others */}
                   <circle
-                    r={isSelected ? 5 : isCapital ? 3.5 : 2.5}
-                    fill={isSelected ? "#ec4899" : isCapital ? "#fbbf24" : "#cbd5e1"}
-                    stroke="#0b0f19"
+                    r={isSelected ? 4.5 : isCapital ? 3 : 2}
+                    fill={isSelected ? "#ec4899" : isCapital ? "#f59e0b" : "#94a3b8"}
+                    stroke="#070b14"
                     strokeWidth={1}
                   />
-                  {/* City Label (decluttered) */}
-                  {(currentZoom > 1.8 || isCapital) && (
-                    <text
-                      x={6}
-                      y={3}
-                      fontSize={Math.max(9, 11 / Math.sqrt(currentZoom))}
-                      fill={isSelected ? "#f472b6" : isCapital ? "#fde68a" : "#94a3b8"}
-                      className="font-medium pointer-events-none drop-shadow-md select-none"
-                    >
-                      {city.properties.name}
-                    </text>
-                  )}
+                  {/* Clean City Label (Off-white / Muted, Soft drop-shadow) */}
+                  <text
+                    x={6}
+                    y={3.5}
+                    fontSize={selectedIso ? 11 : 10}
+                    fill={isSelected ? "#f472b6" : isCapital ? "#f1f5f9" : "#cbd5e1"}
+                    className="font-medium pointer-events-none select-none drop-shadow-[0_1px_3px_rgba(0,0,0,0.8)]"
+                  >
+                    {city.properties.name}
+                  </text>
                 </g>
               );
             })}
           </g>
 
-          {/* ── SPLIT SLIDER LEFT SIDE (TRADITIONAL MERCATOR) ── */}
+          {/* Difference Slider Mercator Left Layer */}
           {activeMode === "difference-slider" && (
             <g id="mercator-split-layer" clipPath="url(#split-left-clip)">
-              {/* Mercator Graticule */}
               <path
                 d={mercatorGeoPath(graticuleLines) || ""}
                 fill="none"
-                stroke="#1e293b"
+                stroke="#172236"
                 strokeWidth={0.5}
                 strokeDasharray="2,3"
-                opacity={0.65}
+                opacity={0.6}
               />
-              {/* Mercator Countries */}
               {countries && (
                 <g>
                   {countries.features.map((feature, idx) => {
                     const p = feature.properties;
                     const iso = ((p.ISO_A3 !== "-99" ? p.ISO_A3 : p.ADM0_A3) || "").toUpperCase();
-                    const isSelected = selectedIsoSet.has(iso);
+                    const isSelected = selectedIso === iso;
 
                     return (
                       <path
                         key={`merc-${iso}-${idx}`}
                         d={mercatorGeoPath(feature) || ""}
-                        fill={isSelected ? "#3b82f6" : "#241e38"}
-                        stroke="#4338ca"
-                        strokeWidth={0.6}
+                        fill={isSelected ? "#1d3b6f" : "#1a162b"}
+                        stroke="#3b2f5c"
+                        strokeWidth={0.55}
                       />
                     );
                   })}
@@ -680,41 +683,33 @@ export default function WorldMap() {
             </g>
           )}
 
-          {/* ── PROJECTION LENS OVERLAY ── */}
+          {/* Projection Lens Overlay */}
           {activeMode === "lens" && (
             <g id="projection-lens-layer">
               <g clipPath="url(#lens-circle-clip)">
-                {/* Background inside lens */}
-                <circle
-                  cx={lensPosition.x}
-                  cy={lensPosition.y}
-                  r={lensPosition.radius}
-                  fill="#110d22"
-                />
-                {/* Mercator projection inside lens */}
+                <circle cx={lensPosition.x} cy={lensPosition.y} r={lensPosition.radius} fill="#0d091e" />
                 {countries && (
                   <g>
                     {countries.features.map((feature, idx) => (
                       <path
                         key={`lens-${idx}`}
                         d={mercatorGeoPath(feature) || ""}
-                        fill="#4338ca"
-                        stroke="#818cf8"
+                        fill="#2c1f4d"
+                        stroke="#6366f1"
                         strokeWidth={0.7}
-                        opacity={0.85}
+                        opacity={0.9}
                       />
                     ))}
                   </g>
                 )}
               </g>
-              {/* Lens rim glass ring */}
               <circle
                 cx={lensPosition.x}
                 cy={lensPosition.y}
                 r={lensPosition.radius}
                 fill="none"
                 stroke="#6366f1"
-                strokeWidth={2.5}
+                strokeWidth={2}
                 className="cursor-move"
                 onMouseDown={() => setIsDraggingLens(true)}
               />
@@ -723,26 +718,24 @@ export default function WorldMap() {
                 y={lensPosition.y - lensPosition.radius - 8}
                 textAnchor="middle"
                 fontSize={10}
-                fill="#818cf8"
-                className="font-mono font-semibold uppercase tracking-wider"
+                fill="#a5b4fc"
+                className="font-mono uppercase tracking-wider"
               >
-                Mercator Lens (Conformal Distortion)
+                Mercator Conformal Lens
               </text>
             </g>
           )}
 
-          {/* ── TRUE-SIZE RELOCATED SILHOUETTE DRAG OVERLAY ── */}
+          {/* True Size Relocated Silhouette */}
           {activeMode === "true-size" && trueSizeFeature && (
             <g id="true-size-overlay">
-              {/* Original origin outline with dash */}
               <path
                 d={geoPath(trueSizeFeature) || ""}
                 fill="none"
                 stroke="#f59e0b"
-                strokeWidth={2}
+                strokeWidth={1.8}
                 strokeDasharray="4,4"
               />
-              {/* Relocated silhouette */}
               <path
                 d={trueSizeRelocatedPath}
                 fill="rgba(245, 158, 11, 0.45)"
@@ -756,10 +749,10 @@ export default function WorldMap() {
         </g>
       </svg>
 
-      {/* ── MAP DIFFERENCE SPLIT DIVIDER BAR ── */}
+      {/* Difference Slider Handle */}
       {activeMode === "difference-slider" && (
         <div
-          className="absolute top-0 bottom-0 z-20 w-1 bg-white cursor-ew-resize flex items-center justify-center shadow-[0_0_15px_rgba(255,255,255,0.5)]"
+          className="absolute top-0 bottom-0 z-20 w-0.5 bg-white cursor-ew-resize flex items-center justify-center shadow-lg"
           style={{ left: `${sliderPosition}%` }}
           onMouseDown={(e) => {
             const startX = e.clientX;
@@ -777,90 +770,79 @@ export default function WorldMap() {
             window.addEventListener("mouseup", onMouseUp);
           }}
         >
-          <div className="w-7 h-7 -ml-0.5 rounded-full bg-slate-900 border-2 border-white flex items-center justify-center text-[10px] text-white font-mono shadow-lg">
+          <div className="w-6 h-6 rounded-full bg-slate-900 border border-white flex items-center justify-center text-[10px] text-white font-mono shadow-md">
             ⇄
           </div>
-          {/* Labels on sides */}
-          <div className="absolute top-16 -left-36 px-2.5 py-1 rounded bg-slate-900/80 backdrop-blur border border-slate-700 text-xs font-mono text-purple-300">
-            Mercator (Conformal)
-          </div>
-          <div className="absolute top-16 left-4 px-2.5 py-1 rounded bg-slate-900/80 backdrop-blur border border-slate-700 text-xs font-mono text-emerald-300">
-            Equal Earth (Sep 2026 UN View)
-          </div>
         </div>
       )}
 
-      {/* ── ULTRA-FAST SLEEK HOVER TOOLTIP (<16ms) ── */}
+      {/* Minimal Fast Hover Tooltip */}
       {hoverInfo && (
         <div
-          className="fixed z-50 pointer-events-none transform -translate-x-1/2 -translate-y-full mb-3 px-3 py-1.5 rounded-lg bg-slate-900/95 border border-slate-700 shadow-xl backdrop-blur text-left transition-transform duration-75"
-          style={{ left: hoverInfo.x, top: hoverInfo.y - 10 }}
+          className="fixed z-50 pointer-events-none transform -translate-x-1/2 -translate-y-full mb-2.5 px-2.5 py-1.5 rounded-lg bg-slate-900/95 border border-slate-700/80 shadow-xl backdrop-blur text-left"
+          style={{ left: hoverInfo.x, top: hoverInfo.y - 8 }}
         >
-          <div className="flex items-center gap-2">
-            <span className="text-xs font-semibold text-white tracking-wide">
-              {hoverInfo.name}
-            </span>
-            {hoverInfo.iso3 && (
-              <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 border border-slate-700">
-                {hoverInfo.iso3}
-              </span>
-            )}
+          <div className="text-xs font-semibold text-white tracking-wide leading-tight">
+            {hoverInfo.name}
           </div>
-          <div className="text-[11px] text-slate-400 flex items-center gap-1.5 mt-0.5">
-            <span>{hoverInfo.subtitle}</span>
-            {hoverInfo.coords && <span className="font-mono text-slate-500">· {hoverInfo.coords}</span>}
+          <div className="text-[10px] text-slate-400 mt-0.5 leading-tight">
+            {hoverInfo.subtitle}
           </div>
         </div>
       )}
 
-      {/* ── BOTTOM ATTRIBUTION BAR (MANDATORY SECTION 102) ── */}
-      <div className="absolute bottom-2 left-3 z-10 flex items-center gap-3 px-2.5 py-1 rounded bg-slate-950/70 backdrop-blur border border-slate-800 text-[10px] font-mono text-slate-400">
-        <span>Boundary geometry: Natural Earth (Public Domain)</span>
-        <span>·</span>
-        <span>Equal Earth: Šavrič, Patterson, Jenny (2018)</span>
-        <span>·</span>
-        <span className="text-emerald-400">UN GA Res A/80/L.104</span>
+      {/* Minimal Floating Map Controls (Bottom-Right) */}
+      <div className="absolute bottom-4 right-4 z-20 flex flex-col gap-1 bg-slate-900/80 backdrop-blur-md p-1 rounded-xl border border-slate-800 shadow-lg">
+        <button
+          onClick={() => {
+            if (svgRef.current && zoomBehaviorRef.current) {
+              d3Selection.select(svgRef.current).transition().duration(250).call(zoomBehaviorRef.current.scaleBy, 1.4);
+            }
+          }}
+          className="w-7 h-7 rounded-lg flex items-center justify-center text-slate-300 hover:text-white hover:bg-slate-800 transition-colors"
+          title="Zoom In"
+        >
+          <Plus className="w-3.5 h-3.5" />
+        </button>
+        <button
+          onClick={() => {
+            if (svgRef.current && zoomBehaviorRef.current) {
+              d3Selection.select(svgRef.current).transition().duration(250).call(zoomBehaviorRef.current.scaleBy, 0.7);
+            }
+          }}
+          className="w-7 h-7 rounded-lg flex items-center justify-center text-slate-300 hover:text-white hover:bg-slate-800 transition-colors"
+          title="Zoom Out"
+        >
+          <Minus className="w-3.5 h-3.5" />
+        </button>
+        <button
+          onClick={resetToWorld}
+          className="w-7 h-7 rounded-lg flex items-center justify-center text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
+          title="Reset to Global View"
+        >
+          <RotateCcw className="w-3.5 h-3.5" />
+        </button>
+        <div className="w-full h-px bg-slate-800 my-0.5" />
+        <button
+          onClick={toggleGraticule}
+          className={`w-7 h-7 rounded-lg flex items-center justify-center transition-colors ${
+            showGraticule ? "text-sky-400 bg-slate-800/80" : "text-slate-500 hover:text-slate-300"
+          }`}
+          title="Toggle Graticule Grid"
+        >
+          <Grid className="w-3.5 h-3.5" />
+        </button>
       </div>
 
-      {/* ── COMPASS & ZOOM CONTROLS ── */}
-      <div className="absolute bottom-4 right-4 z-10 flex flex-col gap-1.5 bg-slate-900/80 backdrop-blur p-1 rounded-xl border border-slate-800 shadow-xl">
-        <button
-          onClick={() => {
-            if (svgRef.current && zoomBehaviorRef.current) {
-              d3Selection.select(svgRef.current).transition().duration(300).call(zoomBehaviorRef.current.scaleBy, 1.4);
-            }
-          }}
-          className="w-8 h-8 rounded-lg flex items-center justify-center text-slate-200 hover:bg-slate-800 transition-colors text-base font-semibold"
-          title="Zoom in"
-        >
-          +
-        </button>
-        <button
-          onClick={() => {
-            if (svgRef.current && zoomBehaviorRef.current) {
-              d3Selection.select(svgRef.current).transition().duration(300).call(zoomBehaviorRef.current.scaleBy, 0.7);
-            }
-          }}
-          className="w-8 h-8 rounded-lg flex items-center justify-center text-slate-200 hover:bg-slate-800 transition-colors text-base font-semibold"
-          title="Zoom out"
-        >
-          −
-        </button>
-        <button
-          onClick={() => {
-            if (svgRef.current && zoomBehaviorRef.current) {
-              d3Selection
-                .select(svgRef.current)
-                .transition()
-                .duration(500)
-                .call(zoomBehaviorRef.current.transform, d3Zoom.zoomIdentity);
-            }
-          }}
-          className="w-8 h-8 rounded-lg flex items-center justify-center text-slate-400 hover:text-white hover:bg-slate-800 transition-colors text-xs font-mono"
-          title="Reset to world view"
-        >
-          ⟲
-        </button>
+      {/* Subtle Map Footer (Section 18) */}
+      <div className="absolute bottom-2 left-4 z-10 flex items-center gap-2 text-[11px] text-slate-500 font-sans">
+        <span>Natural Earth</span>
+        <span>·</span>
+        <span className="text-slate-400">Equal Earth projection</span>
+        <span>·</span>
+        <a href="/sources" className="hover:text-slate-300 underline underline-offset-2">
+          Sources
+        </a>
       </div>
     </div>
   );

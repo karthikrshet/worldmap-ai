@@ -1,9 +1,11 @@
 "use client";
 
 import { useMapStore } from "@/stores/mapStore";
+import { X, Building2, Sparkles, MapPin } from "lucide-react";
 
 export default function CityPanel() {
-  const { selectedCity, setSelectedCity, cityPanelOpen, setCityPanelOpen } = useMapStore();
+  const { selectedCity, setSelectedCity, cityPanelOpen, setCityPanelOpen, setAiAssistantOpen } =
+    useMapStore();
 
   if (!cityPanelOpen || !selectedCity) return null;
 
@@ -11,13 +13,15 @@ export default function CityPanel() {
   const coords = selectedCity.geometry.coordinates;
 
   return (
-    <div className="fixed top-16 right-4 z-40 w-80 rounded-2xl bg-slate-900/95 border border-slate-700 shadow-2xl backdrop-blur-xl p-5 text-slate-200 animate-in slide-in-from-right-4 duration-200">
-      {/* Header */}
+    <div className="fixed top-16 right-4 z-40 w-80 rounded-xl bg-slate-900/95 border border-slate-800 shadow-2xl backdrop-blur-xl p-4 text-slate-200 animate-in slide-in-from-right-3 duration-150">
       <div className="flex items-start justify-between">
         <div>
-          <span className="text-[10px] font-mono uppercase tracking-wider text-pink-400 font-semibold">
-            {p.adm0cap === 1 ? "National Capital" : p.megacity === 1 ? "Global Megacity" : "Populated Place"}
-          </span>
+          <div className="flex items-center gap-1.5 text-[10px] font-mono uppercase tracking-wider text-amber-400 font-semibold">
+            <Building2 className="w-3 h-3" />
+            <span>
+              {p.adm0cap === 1 ? "National Capital" : p.megacity === 1 ? "Megacity" : "City"}
+            </span>
+          </div>
           <h3 className="text-xl font-bold text-white tracking-tight mt-0.5">
             {p.name}
           </h3>
@@ -32,59 +36,50 @@ export default function CityPanel() {
             setCityPanelOpen(false);
             setSelectedCity(null);
           }}
-          className="w-7 h-7 rounded-full bg-slate-800 hover:bg-slate-700 flex items-center justify-center text-slate-400 hover:text-white transition-colors"
+          className="w-7 h-7 rounded-lg bg-slate-800/70 hover:bg-slate-700 flex items-center justify-center text-slate-400 hover:text-white transition-colors"
         >
-          ✕
+          <X className="w-4 h-4" />
         </button>
       </div>
 
-      {/* Verified Details */}
-      <div className="mt-4 space-y-2.5 font-mono text-xs">
-        <div className="p-2.5 rounded-xl bg-slate-950/60 border border-slate-800 flex justify-between items-center">
+      <div className="mt-3.5 space-y-2 text-xs">
+        <div className="p-2 rounded-lg bg-slate-950/60 border border-slate-800/80 flex justify-between items-center font-mono">
           <span className="text-slate-400">Coordinates</span>
-          <span className="text-slate-200 font-semibold">
-            {coords[1].toFixed(4)}°N, {coords[0].toFixed(4)}°E
+          <span className="text-slate-200 font-medium">
+            {coords[1].toFixed(2)}°N, {coords[0].toFixed(2)}°E
           </span>
         </div>
 
         {p.pop_max > 0 && (
-          <div className="p-2.5 rounded-xl bg-slate-950/60 border border-slate-800">
-            <div className="flex justify-between items-center">
+          <div className="p-2 rounded-lg bg-slate-950/60 border border-slate-800/80">
+            <div className="flex justify-between items-center font-mono">
               <span className="text-slate-400">Population</span>
-              <span className="text-white font-semibold">
+              <span className="text-white font-bold">
                 {p.pop_max.toLocaleString()}
               </span>
             </div>
-            <p className="text-[10px] text-slate-500 mt-1 font-sans">
-              Source: Natural Earth Populated Places v5.1.2 (LandScan reference estimate)
+            <p className="text-[10px] text-slate-500 mt-0.5">
+              Natural Earth Populated Places v5.1.2 estimate
             </p>
           </div>
         )}
 
         {p.timezone && (
-          <div className="p-2.5 rounded-xl bg-slate-950/60 border border-slate-800 flex justify-between items-center">
+          <div className="p-2 rounded-lg bg-slate-950/60 border border-slate-800/80 flex justify-between items-center font-mono">
             <span className="text-slate-400">Timezone</span>
             <span className="text-slate-300">{p.timezone}</span>
           </div>
         )}
-
-        <div className="p-2.5 rounded-xl bg-slate-950/60 border border-slate-800 flex justify-between items-center">
-          <span className="text-slate-400">Country Code</span>
-          <span className="text-emerald-400 font-semibold">{p.adm0_a3 || p.sov_a3 || "N/A"}</span>
-        </div>
       </div>
 
-      {/* Action Footer */}
-      <div className="mt-4 pt-3 border-t border-slate-800 flex items-center justify-between text-xs font-mono">
-        <span className="text-slate-500 text-[10px]">Natural Earth v5.1.2</span>
+      <div className="mt-3.5 pt-2.5 border-t border-slate-800/80 flex items-center justify-between text-xs">
+        <span className="text-slate-500 text-[10px] font-mono">NE v5.1.2</span>
         <button
-          onClick={() => {
-            // Set as measurement origin or ask about it
-            useMapStore.getState().setAiAssistantOpen(true);
-          }}
-          className="text-pink-400 hover:text-pink-300 text-xs font-medium"
+          onClick={() => setAiAssistantOpen(true)}
+          className="text-sky-400 hover:text-sky-300 text-xs font-medium flex items-center gap-1"
         >
-          Ask about {p.name} →
+          <Sparkles className="w-3 h-3" />
+          <span>Ask about {p.name}</span>
         </button>
       </div>
     </div>
