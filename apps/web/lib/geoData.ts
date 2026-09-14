@@ -2,8 +2,8 @@
  * Geographic data service for WorldMap AI.
  *
  * Loads and indexes published, verified geographic datasets:
- * - Natural Earth 1:110m Admin 0 Countries (boundaries, ISO3, names)
- * - Natural Earth 1:50m Populated Places (1,250+ major world cities, coordinates, population, timezone)
+ * - Natural Earth 1:110m Admin 0 Countries (boundaries, ISO3, names, population)
+ * - Natural Earth 1:50m Populated Places (1,250+ world cities, 196 capitals, coordinates)
  * - Derived Topological Adjacency Map (country borders derived directly from geometry)
  *
  * All datasets are bundled locally in /data/ to guarantee instant loading and
@@ -11,6 +11,7 @@
  */
 
 import * as turf from "@turf/turf";
+import * as d3Geo from "d3-geo";
 
 export interface GeoCountryFeature {
   type: "Feature";
@@ -20,6 +21,8 @@ export interface GeoCountryFeature {
     ADMIN?: string;
     ISO_A3: string;
     ADM0_A3?: string;
+    GU_A3?: string;
+    SOV_A3?: string;
     CONTINENT: string;
     SUBREGION?: string;
     POP_EST?: number;
@@ -30,6 +33,8 @@ export interface GeoCountryFeature {
     [key: string]: unknown;
   };
   geometry: GeoJSON.Geometry;
+  centroid?: [number, number]; // [lon, lat]
+  areaKm2?: number;
 }
 
 export interface GeoCityFeature {
@@ -49,6 +54,7 @@ export interface GeoCityFeature {
     labelrank: number;
     worldcity: number;
     megacity: number;
+    adm0cap: number;
     timezone?: string;
     [key: string]: unknown;
   };
@@ -79,14 +85,16 @@ export interface SearchResult {
   feature?: GeoCountryFeature | GeoCityFeature;
 }
 
-// In-memory cache
+// In-memory caches
 let cachedCountries: CountryDataset | null = null;
 let cachedCities: CityDataset | null = null;
 let cachedNeighbors: Record<string, string[]> | null = null;
 let countryIsoIndex: Map<string, GeoCountryFeature> = new Map();
+let countryNameIndex: Map<string, GeoCountryFeature> = new Map();
+let capitalsByCountryIso: Map<string, string> = new Map();
 
 /**
- * Fetch and index country boundaries
+ * Fetch and index country boundaries with complete ISO fallback resolution
  */
 export async function loadCountries(): Promise<CountryDataset> {
   if (cachedCountries) return cachedCountries;
@@ -96,23 +104,57 @@ export async function loadCountries(): Promise<CountryDataset> {
     throw new Error(`Failed to load countries dataset: ${res.statusText}`);
   }
   const data: CountryDataset = await res.json();
-  cachedCountries = data;
 
-  // Build ISO index
   countryIsoIndex = new Map();
+  countryNameIndex = new Map();
+
   for (const feature of data.features) {
     const p = feature.properties;
-    const iso = (p.ISO_A3 && p.ISO_A3 !== "-99" ? p.ISO_A3 : p.ADM0_A3) || "";
-    if (iso) {
-      countryIsoIndex.set(iso.toUpperCase(), feature);
+
+    // Resolve canonical ISO3 (handling Natural Earth -99 exceptions for France, Norway, etc.)
+    let canonicalIso = p.ISO_A3 && p.ISO_A3 !== "-99" ? p.ISO_A3 : p.ADM0_A3 || p.GU_A3 || p.SOV_A3 || "";
+    if (p.NAME === "France") canonicalIso = "FRA";
+    if (p.NAME === "Norway") canonicalIso = "NOR";
+    if (p.NAME === "Kosovo") canonicalIso = "KOS";
+    if (p.NAME === "N. Cyprus") canonicalIso = "CYN";
+    if (p.NAME === "Somaliland") canonicalIso = "SOL";
+
+    // Ensure ISO_A3 property has the canonical code
+    p.ISO_A3 = canonicalIso;
+
+    // Compute centroid for direct on-map label placement
+    try {
+      const centroid = d3Geo.geoCentroid(feature);
+      feature.centroid = centroid;
+    } catch {
+      // Fallback to turf centroid
+      const c = turf.centroid(feature);
+      feature.centroid = c.geometry.coordinates as [number, number];
     }
+
+    // Compute approximate area for label sizing
+    try {
+      feature.areaKm2 = Math.round(turf.area(feature) / 1_000_000);
+    } catch {
+      feature.areaKm2 = 10000;
+    }
+
+    // Index by all aliases to guarantee zero missing countries
+    if (canonicalIso) countryIsoIndex.set(canonicalIso.toUpperCase(), feature);
+    if (p.ADM0_A3) countryIsoIndex.set(p.ADM0_A3.toUpperCase(), feature);
+    if (p.GU_A3) countryIsoIndex.set(p.GU_A3.toUpperCase(), feature);
+    if (p.SOV_A3) countryIsoIndex.set(p.SOV_A3.toUpperCase(), feature);
+
+    if (p.NAME) countryNameIndex.set(p.NAME.toLowerCase().trim(), feature);
+    if (p.ADMIN) countryNameIndex.set(p.ADMIN.toLowerCase().trim(), feature);
   }
 
+  cachedCountries = data;
   return data;
 }
 
 /**
- * Fetch and index populated places
+ * Fetch and index populated places & capitals
  */
 export async function loadCities(): Promise<CityDataset> {
   if (cachedCities) return cachedCities;
@@ -123,7 +165,36 @@ export async function loadCities(): Promise<CityDataset> {
   }
   const data: CityDataset = await res.json();
   cachedCities = data;
+
+  // Build capital lookup index
+  capitalsByCountryIso = new Map();
+  for (const f of data.features) {
+    const p = f.properties;
+    if (p.adm0cap === 1) {
+      const iso = (p.adm0_a3 || p.sov_a3 || "").toUpperCase();
+      if (iso && !capitalsByCountryIso.has(iso)) {
+        capitalsByCountryIso.set(iso, p.name);
+      }
+      if (p.adm0name) {
+        capitalsByCountryIso.set(p.adm0name.toLowerCase().trim(), p.name);
+      }
+    }
+  }
+
   return data;
+}
+
+/**
+ * Get capital name for a country
+ */
+export function getCountryCapital(iso: string, name?: string): string {
+  if (iso && capitalsByCountryIso.has(iso.toUpperCase())) {
+    return capitalsByCountryIso.get(iso.toUpperCase())!;
+  }
+  if (name && capitalsByCountryIso.has(name.toLowerCase().trim())) {
+    return capitalsByCountryIso.get(name.toLowerCase().trim())!;
+  }
+  return "National Record";
 }
 
 /**
@@ -145,10 +216,14 @@ export async function loadCountryNeighbors(): Promise<Record<string, string[]>> 
 }
 
 /**
- * Get country feature by ISO3
+ * Get country feature by ISO3 or name
  */
-export function getCountryByIso(iso: string): GeoCountryFeature | undefined {
-  return countryIsoIndex.get(iso.toUpperCase());
+export function getCountryByIso(isoOrName: string): GeoCountryFeature | undefined {
+  if (!isoOrName) return undefined;
+  const clean = isoOrName.trim();
+  const byIso = countryIsoIndex.get(clean.toUpperCase());
+  if (byIso) return byIso;
+  return countryNameIndex.get(clean.toLowerCase());
 }
 
 /**
@@ -170,7 +245,7 @@ export async function searchWorld(query: string): Promise<SearchResult[]> {
     const p = f.properties;
     const name = p.NAME.toLowerCase();
     const admin = (p.ADMIN || "").toLowerCase();
-    const iso = ((p.ISO_A3 !== "-99" ? p.ISO_A3 : p.ADM0_A3) || "").toLowerCase();
+    const iso = (p.ISO_A3 || "").toLowerCase();
 
     const isExactIso = iso === clean;
     const isExactName = name === clean || admin === clean;
@@ -191,12 +266,11 @@ export async function searchWorld(query: string): Promise<SearchResult[]> {
     }
   }
 
-  // Search cities (major cities first)
+  // Search cities
   for (const f of citiesData.features) {
     const p = f.properties;
     const name = p.name.toLowerCase();
     const adm0 = (p.adm0name || "").toLowerCase();
-    const adm1 = (p.adm1name || "").toLowerCase();
 
     if (name.startsWith(clean) || (clean.length > 2 && name.includes(clean))) {
       const coords = f.geometry.coordinates;
@@ -212,11 +286,7 @@ export async function searchWorld(query: string): Promise<SearchResult[]> {
     }
   }
 
-  // Rank results:
-  // 1. Exact ISO or exact country name
-  // 2. Exact city name with high population
-  // 3. Country prefix match
-  // 4. City prefix match (sorted by population)
+  // Sort: Exact matches first, countries over minor cities
   results.sort((a, b) => {
     const aTitle = a.title.toLowerCase();
     const bTitle = b.title.toLowerCase();
@@ -226,11 +296,9 @@ export async function searchWorld(query: string): Promise<SearchResult[]> {
     if (aExact && !bExact) return -1;
     if (!aExact && bExact) return 1;
 
-    // Countries prioritized over minor cities
     if (a.type === "country" && b.type !== "country") return -1;
     if (a.type !== "country" && b.type === "country") return 1;
 
-    // If both cities, sort by population
     if (a.type === "city" && b.type === "city") {
       const popA = (a.feature as GeoCityFeature)?.properties.pop_max || 0;
       const popB = (b.feature as GeoCityFeature)?.properties.pop_max || 0;

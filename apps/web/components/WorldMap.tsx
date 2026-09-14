@@ -6,7 +6,7 @@ import * as d3GeoProj from "d3-geo-projection";
 import * as d3Zoom from "d3-zoom";
 import * as d3Selection from "d3-selection";
 import "d3-transition";
-import { useMapStore, type ProjectionId } from "@/stores/mapStore";
+import { useMapStore } from "@/stores/mapStore";
 import {
   loadCountries,
   loadCities,
@@ -57,6 +57,7 @@ export default function WorldMap() {
     width: 1200,
     height: 700,
   });
+  const [hoveredCountryIso, setHoveredCountryIso] = useState<string | null>(null);
   const [hoverInfo, setHoverInfo] = useState<HoverInfo | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -242,7 +243,6 @@ export default function WorldMap() {
     clearCountries();
     setSelectedCity(null);
 
-    // Update URL
     if (typeof window !== "undefined") {
       const url = new URL(window.location.href);
       url.searchParams.delete("country");
@@ -299,7 +299,6 @@ export default function WorldMap() {
     [setSelectedCity, measureOrigin, setDistanceResult]
   );
 
-  // Selected Country ISO Set
   const selectedIso = selectedCountries[0]?.iso3?.toUpperCase() || null;
   const highlightIsoSet = useMemo(
     () => new Set(highlightedCountries.map((i) => i.toUpperCase())),
@@ -310,10 +309,91 @@ export default function WorldMap() {
     [neighborCountries]
   );
 
+  // ── COUNTRY NAME LABELS ACROSS THE ENTIRE WORLD MAP ─────────────────
+  // Every country name is visible with clean collision detection and zoom scaling
+  const visibleCountryLabels = useMemo(() => {
+    if (!countries) return [];
+
+    const labelCandidates: {
+      feature: GeoCountryFeature;
+      name: string;
+      iso: string;
+      screenX: number;
+      screenY: number;
+      fontSize: number;
+      priority: number;
+    }[] = [];
+
+    for (const f of countries.features) {
+      const p = f.properties;
+      const iso = ((p.ISO_A3 !== "-99" ? p.ISO_A3 : p.ADM0_A3) || "").toUpperCase();
+      const centroid = f.centroid || d3Geo.geoCentroid(f);
+      const pt = baseProjection(centroid);
+      if (!pt) continue;
+
+      const area = f.areaKm2 || 10000;
+      const isSelected = selectedIso === iso;
+
+      // Area-based priority
+      let shouldShow = false;
+      let fontSize = 9;
+
+      if (isSelected) {
+        shouldShow = true;
+        fontSize = 13;
+      } else if (currentZoom < 1.4) {
+        // World zoom: show countries with area > 100k km²
+        if (area > 120_000) {
+          shouldShow = true;
+          fontSize = area > 2_000_000 ? 11 : area > 500_000 ? 9.5 : 8.5;
+        }
+      } else if (currentZoom < 2.5) {
+        // Continental zoom: show countries with area > 35k km²
+        if (area > 35_000) {
+          shouldShow = true;
+          fontSize = area > 1_000_000 ? 11 : 9;
+        }
+      } else {
+        // Closer zoom: show all countries
+        shouldShow = true;
+        fontSize = 10;
+      }
+
+      if (shouldShow) {
+        labelCandidates.push({
+          feature: f,
+          name: p.NAME.toUpperCase(),
+          iso,
+          screenX: pt[0],
+          screenY: pt[1],
+          fontSize,
+          priority: isSelected ? 9999999 : area,
+        });
+      }
+    }
+
+    // Sort by priority (larger countries and selected country first)
+    labelCandidates.sort((a, b) => b.priority - a.priority);
+
+    // Screen-space collision detection so labels never overlap
+    const acceptedLabels: typeof labelCandidates = [];
+    const minGap = currentZoom < 1.4 ? 36 : 24;
+
+    for (const candidate of labelCandidates) {
+      const collides = acceptedLabels.some(
+        (existing) =>
+          Math.hypot(existing.screenX - candidate.screenX, existing.screenY - candidate.screenY) < minGap
+      );
+
+      if (!collides || candidate.iso === selectedIso) {
+        acceptedLabels.push(candidate);
+      }
+    }
+
+    return acceptedLabels;
+  }, [countries, selectedIso, currentZoom, baseProjection]);
+
   // ── STRICT CITY DECLUTTERING & SCREEN-SPACE COLLISION DETECTION ─────
-  // Core Rule:
-  // 1. When NO country is selected at world zoom: show almost NO city labels (max 6-8 global megacities/capitals).
-  // 2. When a country IS selected: show ONLY that country's major cities, fading unrelated worldwide cities to 0.
   const declutteredCities = useMemo(() => {
     if (!cities) return [];
 
@@ -327,7 +407,6 @@ export default function WorldMap() {
         return cIso === selectedIso;
       });
 
-      // Sort by prominence (Capitals > Megacities > Population)
       candidateCities.sort((a, b) => {
         const capA = Number(a.properties.adm0cap || 0);
         const capB = Number(b.properties.adm0cap || 0);
@@ -335,37 +414,29 @@ export default function WorldMap() {
         return Number(b.properties.pop_max || 0) - Number(a.properties.pop_max || 0);
       });
 
-      // Limit to max 10 prominent cities for the selected nation
       candidateCities = candidateCities.slice(0, 10);
     } else {
-      // Global World View:
+      // World View: Show at most 6 major global capitals
       if (currentZoom < 1.8) {
-        // At world scale: Show top 6 major global capitals ONLY
         const worldCapitals = ["Tokyo", "London", "Washington, D.C.", "New Delhi", "Beijing", "Paris", "Brasília"];
         candidateCities = cities.features.filter((c) => worldCapitals.includes(c.properties.name));
       } else if (currentZoom < 3.0) {
-        // Moderate zoom: National capitals only
         candidateCities = cities.features
           .filter((c) => c.properties.adm0cap === 1 && c.properties.scalerank <= 2)
           .slice(0, 20);
       } else {
-        // Closer zoom: Major regional cities
-        candidateCities = cities.features
-          .filter((c) => c.properties.scalerank <= 4)
-          .slice(0, 45);
+        candidateCities = cities.features.filter((c) => c.properties.scalerank <= 4).slice(0, 45);
       }
     }
 
-    // Screen-space proximity collision avoidance:
     const finalCities: { city: GeoCityFeature; screenX: number; screenY: number }[] = [];
-    const minDistance = selectedIso ? 24 : 45; // Minimum pixel gap between labels
+    const minDistance = selectedIso ? 24 : 45;
 
     for (const city of candidateCities) {
       const pt = baseProjection(city.geometry.coordinates);
       if (!pt) continue;
 
       const [sx, sy] = pt;
-      // Check collision against already accepted higher-priority cities
       const hasCollision = finalCities.some(
         (existing) => Math.hypot(existing.screenX - sx, existing.screenY - sy) < minDistance
       );
@@ -378,7 +449,7 @@ export default function WorldMap() {
     return finalCities;
   }, [cities, selectedIso, currentZoom, baseProjection]);
 
-  // ── True-Size Drag Feature Relocation ──────────────────────────────
+  // True-Size Relocation
   const trueSizeFeature = useMemo(() => {
     if (!trueSizeIso3 || !countries) return null;
     return (
@@ -427,11 +498,11 @@ export default function WorldMap() {
         setIsDraggingLens(false);
       }}
     >
-      {/* Loading indicator */}
+      {/* Loading overlay */}
       {loading && (
         <div className="absolute inset-0 z-30 flex items-center justify-center bg-[#070b14]/90 backdrop-blur-sm">
           <div className="flex flex-col items-center gap-2">
-            <div className="w-6 h-6 rounded-full border-2 border-sky-500/30 border-t-sky-400 animate-spin" />
+            <div className="w-6 h-6 rounded-full border-2 border-teal-500/30 border-t-teal-400 animate-spin" />
             <span className="text-[11px] font-mono text-slate-400 tracking-wider">
               Rendering Natural Earth...
             </span>
@@ -439,7 +510,7 @@ export default function WorldMap() {
         </div>
       )}
 
-      {/* Main Map SVG */}
+      {/* Main Map SVG Canvas */}
       <svg
         ref={svgRef}
         width={width}
@@ -447,7 +518,6 @@ export default function WorldMap() {
         className="w-full h-full block"
         style={{ touchAction: "none" }}
         onClick={(e) => {
-          // Deselect on ocean / background click
           if ((e.target as SVGElement).tagName === "rect" || (e.target as SVGElement).id === "ocean-bg") {
             resetToWorld();
           }
@@ -455,11 +525,10 @@ export default function WorldMap() {
       >
         <defs>
           <radialGradient id="ocean-gradient" cx="50%" cy="50%" r="65%">
-            <stop offset="0%" stopColor="#0b1222" />
+            <stop offset="0%" stopColor="#0a1020" />
             <stop offset="100%" stopColor="#060912" />
           </radialGradient>
 
-          {/* Difference slider clips */}
           <clipPath id="split-left-clip">
             <rect x={0} y={0} width={(width * sliderPosition) / 100} height={height} />
           </clipPath>
@@ -467,7 +536,6 @@ export default function WorldMap() {
             <rect x={(width * sliderPosition) / 100} y={0} width={width - (width * sliderPosition) / 100} height={height} />
           </clipPath>
 
-          {/* Lens clip */}
           <clipPath id="lens-circle-clip">
             <circle cx={lensPosition.x} cy={lensPosition.y} r={lensPosition.radius} />
           </clipPath>
@@ -480,7 +548,7 @@ export default function WorldMap() {
         <g id="map-zoom-group">
           {/* Base Layer */}
           <g id="base-layer" clipPath={activeMode === "difference-slider" ? "url(#split-right-clip)" : undefined}>
-            {/* Graticule (subtle) */}
+            {/* Graticule Grid */}
             {showGraticule && (
               <path
                 d={geoPath(graticuleLines) || ""}
@@ -511,14 +579,13 @@ export default function WorldMap() {
                   const isHighlighted = highlightIsoSet.has(iso);
                   const isNeighbor = neighborIsoSet.has(iso);
 
-                  // Restrained editorial colors
                   let fill = "#131b2e";
                   let stroke = "#212d45";
                   let strokeWidth = 0.55;
 
                   if (isSelected) {
                     fill = "#1d3b6f";
-                    stroke = "#38bdf8";
+                    stroke = "#00d2b4";
                     strokeWidth = 1.6;
                   } else if (isNeighbor) {
                     fill = "#0f3d3e";
@@ -529,7 +596,6 @@ export default function WorldMap() {
                     stroke = "#fbbf24";
                     strokeWidth = 1.1;
                   } else if (selectedIso) {
-                    // Visually mute other countries when one is selected
                     fill = "#0f1626";
                     stroke = "#192338";
                   }
@@ -541,8 +607,9 @@ export default function WorldMap() {
                       fill={fill}
                       stroke={stroke}
                       strokeWidth={strokeWidth}
-                      className="transition-colors duration-150 cursor-pointer hover:fill-[#1e2c47] hover:stroke-slate-400"
+                      className="transition-colors duration-150 cursor-pointer hover:fill-[#1e2c47] hover:stroke-slate-300"
                       onMouseEnter={(e) => {
+                        setHoveredCountryIso(iso);
                         setHoverInfo({
                           x: e.clientX,
                           y: e.clientY,
@@ -554,7 +621,10 @@ export default function WorldMap() {
                       onMouseMove={(e) => {
                         setHoverInfo((prev) => (prev ? { ...prev, x: e.clientX, y: e.clientY } : null));
                       }}
-                      onMouseLeave={() => setHoverInfo(null)}
+                      onMouseLeave={() => {
+                        setHoveredCountryIso(null);
+                        setHoverInfo(null);
+                      }}
                       onClick={(e) => {
                         e.stopPropagation();
                         handleCountryClick(feature);
@@ -565,13 +635,36 @@ export default function WorldMap() {
               </g>
             )}
 
+            {/* ── EVERY COUNTRY NAME ON THE MAP ── */}
+            <g id="country-labels-layer" className="pointer-events-none select-none">
+              {visibleCountryLabels.map((lbl, idx) => {
+                const isSelected = lbl.iso === selectedIso;
+                const isHovered = lbl.iso === hoveredCountryIso;
+
+                return (
+                  <text
+                    key={idx}
+                    x={lbl.screenX}
+                    y={lbl.screenY}
+                    textAnchor="middle"
+                    dominantBaseline="central"
+                    fontSize={lbl.fontSize}
+                    fill={isSelected ? "#00d2b4" : isHovered ? "#ffffff" : "rgba(226, 232, 240, 0.72)"}
+                    className="font-medium font-sans drop-shadow-[0_1px_4px_rgba(0,0,0,0.9)] tracking-wider uppercase transition-colors"
+                  >
+                    {lbl.name}
+                  </text>
+                );
+              })}
+            </g>
+
             {/* Geodesic Distance Route Arc */}
             {distanceResult && (
               <g id="geodesic-route-layer">
                 <path
                   d={geoPath(distanceResult.arcGeoJson) || ""}
                   fill="none"
-                  stroke="#38bdf8"
+                  stroke="#00d2b4"
                   strokeWidth={2}
                   strokeDasharray="4,4"
                   className="animate-pulse"
@@ -581,7 +674,7 @@ export default function WorldMap() {
                     cx={baseProjection(distanceResult.fromCoords)![0]}
                     cy={baseProjection(distanceResult.fromCoords)![1]}
                     r={4}
-                    fill="#38bdf8"
+                    fill="#00d2b4"
                     stroke="#ffffff"
                     strokeWidth={1.5}
                   />
@@ -599,7 +692,7 @@ export default function WorldMap() {
               </g>
             )}
 
-            {/* Decluttered City Markers & Clean Labels */}
+            {/* Decluttered City Markers */}
             {declutteredCities.map(({ city, screenX, screenY }, idx) => {
               const isSelected = selectedCity?.properties.name === city.properties.name;
               const isCapital = city.properties.adm0cap === 1;
@@ -628,19 +721,17 @@ export default function WorldMap() {
                   }}
                   onMouseLeave={() => setHoverInfo(null)}
                 >
-                  {/* Subtle City Marker: Small warm gold for capitals, tiny mute dot for others */}
                   <circle
                     r={isSelected ? 4.5 : isCapital ? 3 : 2}
                     fill={isSelected ? "#ec4899" : isCapital ? "#f59e0b" : "#94a3b8"}
                     stroke="#070b14"
                     strokeWidth={1}
                   />
-                  {/* Clean City Label (Off-white / Muted, Soft drop-shadow) */}
                   <text
                     x={6}
                     y={3.5}
                     fontSize={selectedIso ? 11 : 10}
-                    fill={isSelected ? "#f472b6" : isCapital ? "#f1f5f9" : "#cbd5e1"}
+                    fill={isSelected ? "#f472b6" : isCapital ? "#f8fafc" : "#cbd5e1"}
                     className="font-medium pointer-events-none select-none drop-shadow-[0_1px_3px_rgba(0,0,0,0.8)]"
                   >
                     {city.properties.name}
@@ -650,7 +741,7 @@ export default function WorldMap() {
             })}
           </g>
 
-          {/* Difference Slider Mercator Left Layer */}
+          {/* Difference Slider Mercator Layer */}
           {activeMode === "difference-slider" && (
             <g id="mercator-split-layer" clipPath="url(#split-left-clip)">
               <path
@@ -826,7 +917,7 @@ export default function WorldMap() {
         <button
           onClick={toggleGraticule}
           className={`w-7 h-7 rounded-lg flex items-center justify-center transition-colors ${
-            showGraticule ? "text-sky-400 bg-slate-800/80" : "text-slate-500 hover:text-slate-300"
+            showGraticule ? "text-teal-400 bg-slate-800/80" : "text-slate-500 hover:text-slate-300"
           }`}
           title="Toggle Graticule Grid"
         >
@@ -834,7 +925,7 @@ export default function WorldMap() {
         </button>
       </div>
 
-      {/* Subtle Map Footer (Section 18) */}
+      {/* Subtle Map Footer */}
       <div className="absolute bottom-2 left-4 z-10 flex items-center gap-2 text-[11px] text-slate-500 font-sans">
         <span>Natural Earth</span>
         <span>·</span>
