@@ -1,0 +1,33 @@
+{
+  "name": "worldmap-ai",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Open-source AI-powered world map for exploring map projections, comparing geographic scale, measuring distortion, and answering map questions with deterministic geospatial calculations and traceable sources.",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "turbo run dev",
+    "build": "turbo run build",
+    "test": "turbo run test",
+    "lint": "turbo run lint",
+    "typecheck": "turbo run typecheck",
+    "format": "prettier --write \"**/*.{ts,tsx,js,json,md}\" --ignore-path .gitignore",
+    "clean": "turbo run clean"
+  },
+  "devDependencies": {
+    "turbo": "^2.1.2",
+    "prettier": "^3.3.3",
+    "typescript": "^5.5.4"
+  },
+  "engines": {
+    "node": ">=20.0.0",
+    "npm": ">=10.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/worldmap-ai/worldmap-ai"
+  },
+  "license": "MIT"
+}

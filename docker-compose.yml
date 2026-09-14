@@ -1,0 +1,100 @@
+version: "3.9"
+
+services:
+  # ── PostgreSQL + PostGIS ─────────────────────────────────────────
+  db:
+    image: postgis/postgis:15-3.4-alpine
+    container_name: worldmap_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-worldmap}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-worldmap}
+      POSTGRES_DB: ${POSTGRES_DB:-worldmap}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/schema:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-worldmap} -d ${POSTGRES_DB:-worldmap}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── FastAPI Geospatial API ───────────────────────────────────────
+  api:
+    build:
+      context: ./services/api
+      dockerfile: Dockerfile
+    container_name: worldmap_api
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-worldmap}:${POSTGRES_PASSWORD:-worldmap}@db:5432/${POSTGRES_DB:-worldmap}
+      DATA_DIRECTORY: /app/datasets
+      API_HOST: 0.0.0.0
+      API_PORT: 8000
+      API_DEBUG: ${API_DEBUG:-false}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+    volumes:
+      - datasets_data:/app/datasets
+      - ./services/api:/app:cached
+    ports:
+      - "${API_PORT:-8000}:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  # ── Data Ingestion (runs once then exits) ───────────────────────
+  ingestion:
+    build:
+      context: ./services/api
+      dockerfile: Dockerfile
+    container_name: worldmap_ingestion
+    restart: "no"
+    command: python -m ingestion.run_pipeline
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-worldmap}:${POSTGRES_PASSWORD:-worldmap}@db:5432/${POSTGRES_DB:-worldmap}
+      DATA_DIRECTORY: /app/datasets
+      NATURAL_EARTH_VERSION: ${NATURAL_EARTH_VERSION:-5.1.2}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    volumes:
+      - datasets_data:/app/datasets
+      - ./services/api:/app:cached
+      - ./datasets/manifests:/app/manifests
+    depends_on:
+      db:
+        condition: service_healthy
+    profiles:
+      - ingestion
+
+  # ── Next.js Frontend ─────────────────────────────────────────────
+  web:
+    build:
+      context: ./apps/web
+      dockerfile: Dockerfile
+      target: dev
+    container_name: worldmap_web
+    restart: unless-stopped
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:${API_PORT:-8000}
+      NEXT_PUBLIC_APP_URL: http://localhost:3000
+      NEXT_PUBLIC_APP_VERSION: ${NEXT_PUBLIC_APP_VERSION:-0.1.0}
+      NEXT_PUBLIC_MAPTILER_KEY: ${NEXT_PUBLIC_MAPTILER_KEY:-}
+    volumes:
+      - ./apps/web:/app:cached
+      - /app/node_modules
+      - /app/.next
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+
+volumes:
+  postgres_data:
+  datasets_data:

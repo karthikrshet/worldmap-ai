@@ -1,0 +1,70 @@
+# Dependencies
+node_modules/
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+.next/
+.turbo/
+build/
+
+# Environment
+.env
+.env.local
+.env.*.local
+*.env
+
+# Data / datasets (large binary files — ingest from source)
+datasets/raw/
+datasets/processed/
+*.shp
+*.dbf
+*.shx
+*.prj
+*.cpg
+*.zip
+
+# Database
+*.sql.bak
+pgdata/
+
+# Logs
+*.log
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/settings.json
+.idea/
+*.swp
+*.swo
+
+# Test artifacts
+.pytest_cache/
+htmlcov/
+.coverage
+coverage/
+playwright-report/
+test-results/
+
+# Docker volumes
+postgres-data/
+redis-data/
+
+# Python virtual envs
+.venv/
+venv/
+env/
+
+# mypy
+.mypy_cache/
+
+# Ruff
+.ruff_cache/
+
+*.tsbuildinfo
+
